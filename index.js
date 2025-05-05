@@ -1,39 +1,63 @@
 import express from "express";
 import pg from "pg";
-import multer from "multer";
+import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { config } from "dotenv";
 import { fileURLToPath } from "url";
 
 config();
-
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "10mb" })); // importante para soportar base64 grandes
 app.use(express.urlencoded({ extended: true }));
 
-// Rutas para servir imágenes
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const uploadsPath = path.join(__dirname, "uploads");
 
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+if (!fs.existsSync(uploadsPath)) {
+  fs.mkdirSync(uploadsPath);
+}
+
+// Serve imágenes (solo por si lo necesitas para debug)
+app.use("/uploads", express.static(uploadsPath));
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// 📦 Multer config para guardar imágenes
-const storage = multer.diskStorage({
-  destination: path.join(__dirname, "uploads"),
-  filename: (req, file, cb) => {
-    const name = Date.now() + "-" + file.originalname.replace(/\s/g, "_");
-    cb(null, name);
-  },
-});
-const upload = multer({ storage });
+// Utilidad: guardar imagen base64 en disco
+function saveBase64Image(base64String) {
+  if (!base64String) return null;
+
+  const matches = base64String.match(/^data:image\/(png|jpe?g);base64,(.+)$/);
+  if (!matches) return null;
+
+  const ext = matches[1];
+  const data = matches[2];
+  const filename = `${Date.now()}-${crypto
+    .randomBytes(4)
+    .toString("hex")}.${ext}`;
+  const filepath = path.join(uploadsPath, filename);
+
+  fs.writeFileSync(filepath, Buffer.from(data, "base64"));
+  return filename;
+}
+
+// Utilidad: leer imagen del disco como base64
+function readImageAsBase64(filename) {
+  if (!filename) return null;
+  const filepath = path.join(uploadsPath, filename);
+  if (!fs.existsSync(filepath)) return null;
+
+  const ext = path.extname(filename).slice(1);
+  const mime = ext === "jpg" || ext === "jpeg" ? "jpeg" : ext;
+  const base64 = fs.readFileSync(filepath).toString("base64");
+  return `data:image/${mime};base64,${base64}`;
+}
 
 /**
- * 1. Endpoint para BORRAR TODO
+ * 1. Wipe total de BD
  */
 app.delete("/wipe", async (req, res) => {
   const client = await pool.connect();
@@ -50,15 +74,18 @@ app.delete("/wipe", async (req, res) => {
 });
 
 /**
- * 2. Crear event track (con imagen real, no base64)
+ * 2. Crear Event Track con base64
  */
-app.post(
-  "/event-track",
-  upload.fields([{ name: "coverImage" }, { name: "overlayImage" }]),
-  async (req, res) => {
-    const client = await pool.connect();
-    try {
-      await client.query(`
+app.post("/event-track", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { name, description, coverImageBase64, overlayImageBase64 } =
+      req.body;
+
+    const coverImage = saveBase64Image(coverImageBase64);
+    const overlayImage = saveBase64Image(overlayImageBase64);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS event_tracks (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
@@ -68,35 +95,46 @@ app.post(
       );
     `);
 
-      const { name, description } = req.body;
-      const coverImagePath = req.files["coverImage"]?.[0]?.filename || null;
-      const overlayImagePath = req.files["overlayImage"]?.[0]?.filename || null;
-
-      const result = await client.query(
-        `INSERT INTO event_tracks (name, description, cover_image, overlay_image)
+    const result = await client.query(
+      `INSERT INTO event_tracks (name, description, cover_image, overlay_image)
        VALUES ($1, $2, $3, $4) RETURNING id`,
-        [name, description, coverImagePath, overlayImagePath]
-      );
+      [name, description, coverImage, overlayImage]
+    );
 
-      res.status(201).json({ id: result.rows[0].id });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    } finally {
-      client.release();
-    }
+    res.status(201).json({ id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
-);
+});
 
 /**
- * 3. Crear evento (con imagen real)
+ * 3. Crear Evento con base64
  */
-app.post(
-  "/event",
-  upload.fields([{ name: "coverImage" }, { name: "cardImage" }]),
-  async (req, res) => {
-    const client = await pool.connect();
-    try {
-      await client.query(`
+app.post("/event", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const {
+      eventTrackId,
+      name,
+      description,
+      longDescription,
+      speakers,
+      initialDate,
+      finalDate,
+      location,
+      capacity,
+      availableSeats,
+      eventTrackName,
+      coverImageBase64,
+      cardImageBase64,
+    } = req.body;
+
+    const coverImage = saveBase64Image(coverImageBase64);
+    const cardImage = saveBase64Image(cardImageBase64);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS events (
         id SERIAL PRIMARY KEY,
         event_track_id INTEGER REFERENCES event_tracks(id),
@@ -115,65 +153,45 @@ app.post(
       );
     `);
 
-      const {
-        eventTrackId,
-        name,
-        description,
-        longDescription,
-        speakers,
-        initialDate,
-        finalDate,
-        location,
-        capacity,
-        availableSeats,
-        eventTrackName,
-      } = req.body;
-
-      const coverImagePath = req.files["coverImage"]?.[0]?.filename || null;
-      const cardImagePath = req.files["cardImage"]?.[0]?.filename || null;
-
-      const result = await client.query(
-        `INSERT INTO events (
+    const result = await client.query(
+      `INSERT INTO events (
         event_track_id, name, description, long_description, speakers,
         initial_date, final_date, location, capacity, available_seats,
         cover_image, card_image, event_track_name
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
       ) RETURNING id`,
-        [
-          eventTrackId,
-          name,
-          description,
-          longDescription,
-          speakers ? JSON.parse(speakers) : [],
-          initialDate,
-          finalDate,
-          location,
-          capacity,
-          availableSeats,
-          coverImagePath,
-          cardImagePath,
-          eventTrackName,
-        ]
-      );
+      [
+        eventTrackId,
+        name,
+        description,
+        longDescription,
+        speakers ? JSON.parse(speakers) : [],
+        initialDate,
+        finalDate,
+        location,
+        capacity,
+        availableSeats,
+        coverImage,
+        cardImage,
+        eventTrackName,
+      ]
+    );
 
-      res.status(201).json({ id: result.rows[0].id });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    } finally {
-      client.release();
-    }
+    res.status(201).json({ id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
-);
+});
 
 /**
- * 4. Obtener full-data con URL de imágenes
+ * 4. Obtener full-data con imágenes en base64
  */
 app.get("/full-data", async (req, res) => {
   const client = await pool.connect();
   try {
-    const baseUrl = `${req.protocol}://${req.get("host")}/uploads`;
-
     const tracksResult = await client.query("SELECT * FROM event_tracks");
     const fullData = [];
 
@@ -193,24 +211,16 @@ app.get("/full-data", async (req, res) => {
 
         events.push({
           ...event,
-          cover_image: event.cover_image
-            ? `${baseUrl}/${event.cover_image}`
-            : null,
-          card_image: event.card_image
-            ? `${baseUrl}/${event.card_image}`
-            : null,
+          cover_image: readImageAsBase64(event.cover_image),
+          card_image: readImageAsBase64(event.card_image),
           feedbacks: feedbackResult.rows,
         });
       }
 
       fullData.push({
         ...track,
-        cover_image: track.cover_image
-          ? `${baseUrl}/${track.cover_image}`
-          : null,
-        overlay_image: track.overlay_image
-          ? `${baseUrl}/${track.overlay_image}`
-          : null,
+        cover_image: readImageAsBase64(track.cover_image),
+        overlay_image: readImageAsBase64(track.overlay_image),
         events,
       });
     }
@@ -224,7 +234,7 @@ app.get("/full-data", async (req, res) => {
 });
 
 /**
- * 5. Otros endpoints se mantienen igual (feedback, hash, seat, recommended...)
+ * 5. Feedback
  */
 app.post("/feedback", async (req, res) => {
   const client = await pool.connect();
@@ -255,11 +265,17 @@ app.post("/feedback", async (req, res) => {
   }
 });
 
+/**
+ * 6. Hash
+ */
 app.get("/generate-hash", (req, res) => {
   const hash = crypto.randomBytes(16).toString("hex");
   res.json({ hash });
 });
 
+/**
+ * 7. Seats
+ */
 app.post("/event/:id/decrement-seat", async (req, res) => {
   try {
     const result = await pool.query(
@@ -290,6 +306,9 @@ app.post("/event/:id/increment-seat", async (req, res) => {
   }
 });
 
+/**
+ * 8. Recomendados
+ */
 app.post("/recommended", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -334,6 +353,9 @@ app.get("/recommended", async (req, res) => {
   }
 });
 
+/**
+ * 9. Raíz
+ */
 app.get("/", (req, res) => {
   res.send("Hello World");
 });
