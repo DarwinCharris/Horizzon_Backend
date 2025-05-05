@@ -1,44 +1,47 @@
 import express from "express";
 import pg from "pg";
-import { config } from "dotenv";
+import multer from "multer";
+import path from "path";
 import crypto from "crypto";
+import { config } from "dotenv";
+import { fileURLToPath } from "url";
 
 config();
 
 const app = express();
-app.use(express.json({ limit: "10mb" })); // Soporte para imágenes grandes
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Rutas para servir imágenes
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// 🔹 Crear Event Track
-app.post("/event-track", async (req, res) => {
+// 📦 Multer config para guardar imágenes
+const storage = multer.diskStorage({
+  destination: path.join(__dirname, "uploads"),
+  filename: (req, file, cb) => {
+    const name = Date.now() + "-" + file.originalname.replace(/\s/g, "_");
+    cb(null, name);
+  },
+});
+const upload = multer({ storage });
+
+/**
+ * 1. Endpoint para BORRAR TODO
+ */
+app.delete("/wipe", async (req, res) => {
   const client = await pool.connect();
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS event_tracks (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT,
-        cover_image BYTEA,
-        overlay_image BYTEA
-      );
-    `);
-
-    const { name, description, coverImageBase64, overlayImageBase64 } =
-      req.body;
-
-    const coverImageBuffer = Buffer.from(coverImageBase64, "base64");
-    const overlayImageBuffer = Buffer.from(overlayImageBase64, "base64");
-
-    const result = await client.query(
-      `INSERT INTO event_tracks (name, description, cover_image, overlay_image)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [name, description, coverImageBuffer, overlayImageBuffer]
+    await client.query(
+      "DROP TABLE IF EXISTS recommended, feedbacks, events, event_tracks CASCADE;"
     );
-
-    res.status(201).json({ id: result.rows[0].id });
+    res.status(200).json({ message: "Base de datos limpiada" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   } finally {
@@ -46,33 +49,54 @@ app.post("/event-track", async (req, res) => {
   }
 });
 
-// 🔹 Obtener Event Track con imagenes en base64
-app.get("/event-track/:id", async (req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT * FROM event_tracks WHERE id = $1",
-      [req.params.id]
-    );
+/**
+ * 2. Crear event track (con imagen real, no base64)
+ */
+app.post(
+  "/event-track",
+  upload.fields([{ name: "coverImage" }, { name: "overlayImage" }]),
+  async (req, res) => {
+    const client = await pool.connect();
+    try {
+      await client.query(`
+      CREATE TABLE IF NOT EXISTS event_tracks (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        cover_image TEXT,
+        overlay_image TEXT
+      );
+    `);
 
-    if (result.rows.length === 0)
-      return res.status(404).json({ error: "Not found" });
+      const { name, description } = req.body;
+      const coverImagePath = req.files["coverImage"]?.[0]?.filename || null;
+      const overlayImagePath = req.files["overlayImage"]?.[0]?.filename || null;
 
-    const track = result.rows[0];
-    res.json({
-      ...track,
-      cover_image: track.cover_image?.toString("base64") ?? null,
-      overlay_image: track.overlay_image?.toString("base64") ?? null,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+      const result = await client.query(
+        `INSERT INTO event_tracks (name, description, cover_image, overlay_image)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+        [name, description, coverImagePath, overlayImagePath]
+      );
+
+      res.status(201).json({ id: result.rows[0].id });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    } finally {
+      client.release();
+    }
   }
-});
+);
 
-// 🔹 Crear Evento
-app.post("/event", async (req, res) => {
-  const client = await pool.connect();
-  try {
-    await client.query(`
+/**
+ * 3. Crear evento (con imagen real)
+ */
+app.post(
+  "/event",
+  upload.fields([{ name: "coverImage" }, { name: "cardImage" }]),
+  async (req, res) => {
+    const client = await pool.connect();
+    try {
+      await client.query(`
       CREATE TABLE IF NOT EXISTS events (
         id SERIAL PRIMARY KEY,
         event_track_id INTEGER REFERENCES event_tracks(id),
@@ -85,40 +109,13 @@ app.post("/event", async (req, res) => {
         location TEXT,
         capacity INTEGER,
         available_seats INTEGER,
-        cover_image BYTEA,
-        card_image BYTEA,
+        cover_image TEXT,
+        card_image TEXT,
         event_track_name TEXT
       );
     `);
 
-    const {
-      eventTrackId,
-      name,
-      description,
-      longDescription,
-      speakers,
-      initialDate,
-      finalDate,
-      location,
-      capacity,
-      availableSeats,
-      coverImageBase64,
-      cardImageBase64,
-      eventTrackName,
-    } = req.body;
-
-    const coverBuffer = Buffer.from(coverImageBase64, "base64");
-    const cardBuffer = Buffer.from(cardImageBase64, "base64");
-
-    const result = await client.query(
-      `INSERT INTO events (
-        event_track_id, name, description, long_description, speakers,
-        initial_date, final_date, location, capacity, available_seats,
-        cover_image, card_image, event_track_name
-      ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
-      ) RETURNING id`,
-      [
+      const {
         eventTrackId,
         name,
         description,
@@ -129,13 +126,96 @@ app.post("/event", async (req, res) => {
         location,
         capacity,
         availableSeats,
-        coverBuffer,
-        cardBuffer,
         eventTrackName,
-      ]
-    );
+      } = req.body;
 
-    res.status(201).json({ id: result.rows[0].id });
+      const coverImagePath = req.files["coverImage"]?.[0]?.filename || null;
+      const cardImagePath = req.files["cardImage"]?.[0]?.filename || null;
+
+      const result = await client.query(
+        `INSERT INTO events (
+        event_track_id, name, description, long_description, speakers,
+        initial_date, final_date, location, capacity, available_seats,
+        cover_image, card_image, event_track_name
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+      ) RETURNING id`,
+        [
+          eventTrackId,
+          name,
+          description,
+          longDescription,
+          speakers ? JSON.parse(speakers) : [],
+          initialDate,
+          finalDate,
+          location,
+          capacity,
+          availableSeats,
+          coverImagePath,
+          cardImagePath,
+          eventTrackName,
+        ]
+      );
+
+      res.status(201).json({ id: result.rows[0].id });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/**
+ * 4. Obtener full-data con URL de imágenes
+ */
+app.get("/full-data", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const baseUrl = `${req.protocol}://${req.get("host")}/uploads`;
+
+    const tracksResult = await client.query("SELECT * FROM event_tracks");
+    const fullData = [];
+
+    for (const track of tracksResult.rows) {
+      const eventResult = await client.query(
+        "SELECT * FROM events WHERE event_track_id = $1",
+        [track.id]
+      );
+
+      const events = [];
+
+      for (const event of eventResult.rows) {
+        const feedbackResult = await client.query(
+          "SELECT * FROM feedbacks WHERE event_id = $1",
+          [event.id]
+        );
+
+        events.push({
+          ...event,
+          cover_image: event.cover_image
+            ? `${baseUrl}/${event.cover_image}`
+            : null,
+          card_image: event.card_image
+            ? `${baseUrl}/${event.card_image}`
+            : null,
+          feedbacks: feedbackResult.rows,
+        });
+      }
+
+      fullData.push({
+        ...track,
+        cover_image: track.cover_image
+          ? `${baseUrl}/${track.cover_image}`
+          : null,
+        overlay_image: track.overlay_image
+          ? `${baseUrl}/${track.overlay_image}`
+          : null,
+        events,
+      });
+    }
+
+    res.json(fullData);
   } catch (err) {
     res.status(500).json({ error: err.message });
   } finally {
@@ -143,7 +223,9 @@ app.post("/event", async (req, res) => {
   }
 });
 
-// 🔹 Añadir Feedback
+/**
+ * 5. Otros endpoints se mantienen igual (feedback, hash, seat, recommended...)
+ */
 app.post("/feedback", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -173,13 +255,11 @@ app.post("/feedback", async (req, res) => {
   }
 });
 
-// 🔹 Generar hash único
 app.get("/generate-hash", (req, res) => {
   const hash = crypto.randomBytes(16).toString("hex");
   res.json({ hash });
 });
 
-// 🔹 Reducir en 1 available_seats
 app.post("/event/:id/decrement-seat", async (req, res) => {
   try {
     const result = await pool.query(
@@ -195,7 +275,6 @@ app.post("/event/:id/decrement-seat", async (req, res) => {
   }
 });
 
-// 🔹 Aumentar en 1 available_seats
 app.post("/event/:id/increment-seat", async (req, res) => {
   try {
     const result = await pool.query(
@@ -210,150 +289,7 @@ app.post("/event/:id/increment-seat", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.get("/", (req, res) => {
-  res.send("Hello World");
-});
 
-app.get("/event-tracks", async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const trackResult = await client.query("SELECT * FROM event_tracks");
-
-    const tracks = [];
-    for (const track of trackResult.rows) {
-      // Obtener eventos asociados
-      const eventResult = await client.query(
-        "SELECT * FROM events WHERE event_track_id = $1",
-        [track.id]
-      );
-
-      const events = eventResult.rows.map((event) => ({
-        ...event,
-        cover_image: event.cover_image?.toString("base64") ?? null,
-        card_image: event.card_image?.toString("base64") ?? null,
-      }));
-
-      tracks.push({
-        ...track,
-        cover_image: track.cover_image?.toString("base64") ?? null,
-        overlay_image: track.overlay_image?.toString("base64") ?? null,
-        events: events,
-      });
-    }
-
-    res.json(tracks);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-app.get("/events", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT * FROM events");
-
-    const events = result.rows.map((event) => ({
-      ...event,
-      cover_image: event.cover_image?.toString("base64") ?? null,
-      card_image: event.card_image?.toString("base64") ?? null,
-    }));
-
-    res.json(events);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-app.get("/feedbacks", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT * FROM feedbacks");
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-app.get("/full-data", async (req, res) => {
-  const client = await pool.connect();
-  try {
-    // Asegurarse de que las tablas existan
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS event_tracks (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT,
-        cover_image BYTEA,
-        overlay_image BYTEA
-      );
-
-      CREATE TABLE IF NOT EXISTS events (
-        id SERIAL PRIMARY KEY,
-        event_track_id INTEGER REFERENCES event_tracks(id),
-        name TEXT NOT NULL,
-        description TEXT,
-        long_description TEXT,
-        speakers TEXT[],
-        initial_date TIMESTAMP,
-        final_date TIMESTAMP,
-        location TEXT,
-        capacity INTEGER,
-        available_seats INTEGER,
-        cover_image BYTEA,
-        card_image BYTEA,
-        event_track_name TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS feedbacks (
-        id SERIAL PRIMARY KEY,
-        user_id TEXT,
-        event_id INTEGER REFERENCES events(id),
-        stars INTEGER CHECK (stars BETWEEN 1 AND 5),
-        comment TEXT
-      );
-    `);
-
-    const tracksResult = await client.query("SELECT * FROM event_tracks");
-
-    const fullData = [];
-
-    for (const track of tracksResult.rows) {
-      // Eventos asociados al track
-      const eventResult = await client.query(
-        "SELECT * FROM events WHERE event_track_id = $1",
-        [track.id]
-      );
-
-      const events = [];
-
-      for (const event of eventResult.rows) {
-        // Feedbacks asociados al evento
-        const feedbackResult = await client.query(
-          "SELECT * FROM feedbacks WHERE event_id = $1",
-          [event.id]
-        );
-
-        events.push({
-          ...event,
-          cover_image: event.cover_image?.toString("base64") ?? null,
-          card_image: event.card_image?.toString("base64") ?? null,
-          feedbacks: feedbackResult.rows,
-        });
-      }
-
-      fullData.push({
-        ...track,
-        cover_image: track.cover_image?.toString("base64") ?? null,
-        overlay_image: track.overlay_image?.toString("base64") ?? null,
-        events: events,
-      });
-    }
-
-    res.json(fullData);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
 app.post("/recommended", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -366,7 +302,6 @@ app.post("/recommended", async (req, res) => {
 
     const { eventId } = req.body;
 
-    // Verifica si el evento existe
     const eventResult = await client.query(
       "SELECT 1 FROM events WHERE id = $1",
       [eventId]
@@ -376,7 +311,6 @@ app.post("/recommended", async (req, res) => {
       return res.status(404).json({ error: "Evento no encontrado" });
     }
 
-    // Intenta insertar (evita duplicados con UNIQUE)
     await client.query(
       "INSERT INTO recommended (event_id) VALUES ($1) ON CONFLICT DO NOTHING",
       [eventId]
@@ -389,19 +323,21 @@ app.post("/recommended", async (req, res) => {
     client.release();
   }
 });
+
 app.get("/recommended", async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT event_id FROM recommended
-    `);
-
+    const result = await pool.query("SELECT event_id FROM recommended");
     const ids = result.rows.map((row) => row.event_id);
-    res.json(ids); // Retorna una lista [1, 2, 3]
+    res.json(ids);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+app.get("/", (req, res) => {
+  res.send("Hello World");
+});
+
 app.listen(3000, () => {
-  console.log("Server is running on port 3000");
+  console.log("Server running on port 3000");
 });
