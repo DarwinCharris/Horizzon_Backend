@@ -1,3 +1,4 @@
+// index.js (o server.js)
 import express from "express";
 import pg from "pg";
 import fs from "fs";
@@ -8,7 +9,7 @@ import { fileURLToPath } from "url";
 
 config();
 const app = express();
-app.use(express.json({ limit: "10mb" })); // importante para soportar base64 grandes
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,14 +20,13 @@ if (!fs.existsSync(uploadsPath)) {
   fs.mkdirSync(uploadsPath);
 }
 
-// Serve imágenes (solo por si lo necesitas para debug)
 app.use("/uploads", express.static(uploadsPath));
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// Utilidad: guardar imagen base64 en disco
+// Guardar imagen base64 en disco
 function saveBase64Image(base64String) {
   if (!base64String) return null;
 
@@ -44,7 +44,7 @@ function saveBase64Image(base64String) {
   return filename;
 }
 
-// Utilidad: leer imagen del disco como base64
+// Leer imagen y devolver base64
 function readImageAsBase64(filename) {
   if (!filename) return null;
   const filepath = path.join(uploadsPath, filename);
@@ -56,9 +56,7 @@ function readImageAsBase64(filename) {
   return `data:image/${mime};base64,${base64}`;
 }
 
-/**
- * 1. Wipe total de BD
- */
+// 1. Wipe
 app.delete("/wipe", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -73,9 +71,7 @@ app.delete("/wipe", async (req, res) => {
   }
 });
 
-/**
- * 2. Crear Event Track con base64
- */
+// 2. Crear Event Track
 app.post("/event-track", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -109,9 +105,7 @@ app.post("/event-track", async (req, res) => {
   }
 });
 
-/**
- * 3. Crear Evento con base64
- */
+// 3. Crear Evento
 app.post("/event", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -186,9 +180,7 @@ app.post("/event", async (req, res) => {
   }
 });
 
-/**
- * 4. Obtener full-data con imágenes en base64
- */
+// 4. Obtener Full Data
 app.get("/full-data", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -233,9 +225,7 @@ app.get("/full-data", async (req, res) => {
   }
 });
 
-/**
- * 5. Feedback
- */
+// 5. Feedback
 app.post("/feedback", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -265,24 +255,18 @@ app.post("/feedback", async (req, res) => {
   }
 });
 
-/**
- * 6. Hash
- */
+// 6. Hash
 app.get("/generate-hash", (req, res) => {
   const hash = crypto.randomBytes(16).toString("hex");
   res.json({ hash });
 });
 
-/**
- * 7. Seats
- */
+// 7. Seats
 app.post("/event/:id/decrement-seat", async (req, res) => {
   try {
     const result = await pool.query(
-      `UPDATE events
-       SET available_seats = GREATEST(available_seats - 1, 0)
-       WHERE id = $1
-       RETURNING available_seats`,
+      `UPDATE events SET available_seats = GREATEST(available_seats - 1, 0)
+       WHERE id = $1 RETURNING available_seats`,
       [req.params.id]
     );
     res.json(result.rows[0]);
@@ -294,10 +278,8 @@ app.post("/event/:id/decrement-seat", async (req, res) => {
 app.post("/event/:id/increment-seat", async (req, res) => {
   try {
     const result = await pool.query(
-      `UPDATE events
-       SET available_seats = available_seats + 1
-       WHERE id = $1
-       RETURNING available_seats`,
+      `UPDATE events SET available_seats = available_seats + 1
+       WHERE id = $1 RETURNING available_seats`,
       [req.params.id]
     );
     res.json(result.rows[0]);
@@ -306,9 +288,7 @@ app.post("/event/:id/increment-seat", async (req, res) => {
   }
 });
 
-/**
- * 8. Recomendados
- */
+// 8. Recomendados
 app.post("/recommended", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -353,9 +333,6 @@ app.get("/recommended", async (req, res) => {
   }
 });
 
-/**
- * 9. Raíz
- */
 app.get("/", (req, res) => {
   res.send("Hello World");
 });
