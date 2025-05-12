@@ -26,36 +26,6 @@ const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// Guardar imagen base64 en disco
-function saveBase64Image(base64String) {
-  if (!base64String) return null;
-
-  const matches = base64String.match(/^data:image\/(png|jpe?g);base64,(.+)$/);
-  if (!matches) return null;
-
-  const ext = matches[1];
-  const data = matches[2];
-  const filename = `${Date.now()}-${crypto
-    .randomBytes(4)
-    .toString("hex")}.${ext}`;
-  const filepath = path.join(uploadsPath, filename);
-
-  fs.writeFileSync(filepath, Buffer.from(data, "base64"));
-  return filename;
-}
-
-// Leer imagen y devolver base64
-function readImageAsBase64(filename) {
-  if (!filename) return null;
-  const filepath = path.join(uploadsPath, filename);
-  if (!fs.existsSync(filepath)) return null;
-
-  const ext = path.extname(filename).slice(1);
-  const mime = ext === "jpg" || ext === "jpeg" ? "jpeg" : ext;
-  const base64 = fs.readFileSync(filepath).toString("base64");
-  return `data:image/${mime};base64,${base64}`;
-}
-
 // 1. Wipe
 app.delete("/wipe", async (req, res) => {
   const client = await pool.connect();
@@ -335,6 +305,207 @@ app.get("/recommended", async (req, res) => {
 
 app.get("/", (req, res) => {
   res.send("Hello World");
+});
+
+// Eliminar Feedback
+app.delete("/delete-feedback/:id", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    // Verifica si el feedback existe
+    const checkResult = await client.query(
+      "SELECT 1 FROM feedbacks WHERE id = $1",
+      [id]
+    );
+
+    if (checkResult.rowCount === 0) {
+      return res.status(404).json({ error: "Feedback no encontrado" });
+    }
+
+    // Elimina el feedback
+    await client.query("DELETE FROM feedbacks WHERE id = $1", [id]);
+
+    res.status(200).json({ message: "Feedback eliminado correctamente" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+// Eliminar Evento (y sus feedbacks asociados)
+app.delete("/delete-event/:id", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    // Verifica si el evento existe
+    const eventCheck = await client.query(
+      "SELECT 1 FROM events WHERE id = $1",
+      [id]
+    );
+
+    if (eventCheck.rowCount === 0) {
+      return res.status(404).json({ error: "Evento no encontrado" });
+    }
+
+    // Elimina los feedbacks asociados
+    await client.query("DELETE FROM feedbacks WHERE event_id = $1", [id]);
+
+    // Elimina el evento
+    await client.query("DELETE FROM events WHERE id = $1", [id]);
+
+    res.status(200).json({
+      message: "Evento y feedbacks asociados eliminados correctamente",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Eliminar Event Track (y sus eventos y feedbacks asociados)
+app.delete("/delete-event-track/:id", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    // Verifica si el event_track existe
+    const trackCheck = await client.query(
+      "SELECT 1 FROM event_tracks WHERE id = $1",
+      [id]
+    );
+
+    if (trackCheck.rowCount === 0) {
+      return res.status(404).json({ error: "Event track no encontrado" });
+    }
+
+    // Obtener todos los eventos asociados al event track
+    const eventsResult = await client.query(
+      "SELECT id FROM events WHERE event_track_id = $1",
+      [id]
+    );
+
+    const eventIds = eventsResult.rows.map((row) => row.id);
+
+    if (eventIds.length > 0) {
+      // Eliminar feedbacks de todos esos eventos
+      await client.query(
+        "DELETE FROM feedbacks WHERE event_id = ANY($1::int[])",
+        [eventIds]
+      );
+
+      // Eliminar eventos
+      await client.query("DELETE FROM events WHERE id = ANY($1::int[])", [
+        eventIds,
+      ]);
+    }
+
+    // Eliminar el event track
+    await client.query("DELETE FROM event_tracks WHERE id = $1", [id]);
+
+    res.status(200).json({
+      message:
+        "Event track, eventos y feedbacks asociados eliminados correctamente",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/all-event-tracks", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM event_tracks");
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/all-events", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM events");
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/all-feedbacks", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM feedbacks");
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/event-track-byid/:id", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    // Buscar el event track
+    const trackResult = await client.query(
+      "SELECT * FROM event_tracks WHERE id = $1",
+      [id]
+    );
+    if (trackResult.rowCount === 0) {
+      return res.status(404).json({ error: "Event track no encontrado" });
+    }
+    const track = trackResult.rows[0];
+
+    // Buscar eventos asociados
+    const eventsResult = await client.query(
+      "SELECT * FROM events WHERE event_track_id = $1",
+      [id]
+    );
+    const events = [];
+
+    for (const event of eventsResult.rows) {
+      const feedbacksResult = await client.query(
+        "SELECT * FROM feedbacks WHERE event_id = $1",
+        [event.id]
+      );
+      events.push({ ...event, feedbacks: feedbacksResult.rows });
+    }
+
+    res.json({ ...track, events });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/event-byid/:id", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    const eventResult = await client.query(
+      "SELECT * FROM events WHERE id = $1",
+      [id]
+    );
+    if (eventResult.rowCount === 0) {
+      return res.status(404).json({ error: "Evento no encontrado" });
+    }
+    const event = eventResult.rows[0];
+
+    const feedbacksResult = await client.query(
+      "SELECT * FROM feedbacks WHERE event_id = $1",
+      [id]
+    );
+
+    res.json({ ...event, feedbacks: feedbacksResult.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
 app.listen(3000, () => {
