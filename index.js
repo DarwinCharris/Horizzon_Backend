@@ -78,8 +78,8 @@ app.post("/event-track", async (req, res) => {
     const { name, description, coverImageBase64, overlayImageBase64 } =
       req.body;
 
-    const coverImage = saveBase64Image(coverImageBase64);
-    const overlayImage = saveBase64Image(overlayImageBase64);
+    const coverImage = coverImageBase64;
+    const overlayImage = overlayImageBase64;
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS event_tracks (
@@ -125,8 +125,8 @@ app.post("/event", async (req, res) => {
       cardImageBase64,
     } = req.body;
 
-    const coverImage = saveBase64Image(coverImageBase64);
-    const cardImage = saveBase64Image(cardImageBase64);
+    const coverImage = coverImageBase64;
+    const cardImage = cardImageBase64;
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS events (
@@ -203,16 +203,16 @@ app.get("/full-data", async (req, res) => {
 
         events.push({
           ...event,
-          cover_image: readImageAsBase64(event.cover_image),
-          card_image: readImageAsBase64(event.card_image),
+          cover_image: event.cover_image,
+          card_image: event.card_image,
           feedbacks: feedbackResult.rows,
         });
       }
 
       fullData.push({
         ...track,
-        cover_image: readImageAsBase64(track.cover_image),
-        overlay_image: readImageAsBase64(track.overlay_image),
+        cover_image: track.cover_image,
+        overlay_image: track.overlay_image,
         events,
       });
     }
