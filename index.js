@@ -508,6 +508,156 @@ app.get("/event-byid/:id", async (req, res) => {
   }
 });
 
+app.post("/event-track-edit", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id, name, description, coverImageBase64, overlayImageBase64 } =
+      req.body;
+
+    if (!id) {
+      return res
+        .status(400)
+        .json({ error: "El ID del event_track es obligatorio" });
+    }
+
+    // Verifica si el event_track existe
+    const checkResult = await client.query(
+      "SELECT 1 FROM event_tracks WHERE id = $1",
+      [id]
+    );
+    if (checkResult.rowCount === 0) {
+      return res.status(404).json({ error: "Event track no encontrado" });
+    }
+
+    // Construir la consulta dinámica
+    const fields = [];
+    const values = [];
+    let index = 1;
+
+    if (name !== undefined) {
+      fields.push(`name = $${++index}`);
+      values.push(name);
+    }
+
+    if (description !== undefined) {
+      fields.push(`description = $${++index}`);
+      values.push(description);
+    }
+
+    if (coverImageBase64 !== undefined) {
+      fields.push(`cover_image = $${++index}`);
+      values.push(coverImageBase64);
+    }
+
+    if (overlayImageBase64 !== undefined) {
+      fields.push(`overlay_image = $${++index}`);
+      values.push(overlayImageBase64);
+    }
+
+    if (fields.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "No se proporcionó ningún campo para actualizar" });
+    }
+
+    const query = `UPDATE event_tracks SET ${fields.join(", ")} WHERE id = $1`;
+    await client.query(query, [id, ...values]);
+
+    res.status(200).json({ message: "Event track actualizado correctamente" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/event-edit", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const {
+      id,
+      event_track_id,
+      name,
+      description,
+      long_description,
+      speakers,
+      initial_date,
+      final_date,
+      location,
+      capacity,
+      available_seats,
+      cover_image,
+      card_image,
+      event_track_name,
+    } = req.body;
+
+    if (!id) {
+      return res.status(400).json({ error: "El ID del evento es obligatorio" });
+    }
+
+    // Verifica si el evento existe
+    const eventCheck = await client.query(
+      "SELECT 1 FROM events WHERE id = $1",
+      [id]
+    );
+    if (eventCheck.rowCount === 0) {
+      return res.status(404).json({ error: "Evento no encontrado" });
+    }
+
+    // Si se proporciona un event_track_id, validarlo
+    if (event_track_id !== undefined) {
+      const trackCheck = await client.query(
+        "SELECT 1 FROM event_tracks WHERE id = $1",
+        [event_track_id]
+      );
+      if (trackCheck.rowCount === 0) {
+        return res.status(400).json({ error: "event_track_id no válido" });
+      }
+    }
+
+    // Construcción dinámica del UPDATE
+    const fields = [];
+    const values = [];
+    let index = 1;
+
+    const addField = (fieldName, value) => {
+      if (value !== undefined) {
+        fields.push(`${fieldName} = $${++index}`);
+        values.push(value);
+      }
+    };
+
+    addField("event_track_id", event_track_id);
+    addField("name", name);
+    addField("description", description);
+    addField("long_description", long_description);
+    addField("speakers", speakers ? JSON.parse(speakers) : undefined);
+    addField("initial_date", initial_date);
+    addField("final_date", final_date);
+    addField("location", location);
+    addField("capacity", capacity);
+    addField("available_seats", available_seats);
+    addField("cover_image", cover_image);
+    addField("card_image", card_image);
+    addField("event_track_name", event_track_name);
+
+    if (fields.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "No se proporcionó ningún campo para actualizar" });
+    }
+
+    const query = `UPDATE events SET ${fields.join(", ")} WHERE id = $1`;
+    await client.query(query, [id, ...values]);
+
+    res.status(200).json({ message: "Evento actualizado correctamente" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.listen(3000, () => {
   console.log("Server running on port 3000");
 });
