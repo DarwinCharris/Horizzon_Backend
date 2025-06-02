@@ -675,7 +675,8 @@ app.get("/subsperevent", async (req, res) => {
       const events = eventsResult.rows.map((event) => ({
         id: event.id,
         name: event.name,
-        inscritos: event.capacity - event.available_seats,
+        inscritos: event.available_seats,
+        asientos: event.capacity,
       }));
 
       data.push({
