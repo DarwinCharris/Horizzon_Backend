@@ -677,7 +677,10 @@ app.get("/subsperevent", async (req, res) => {
         name: event.name,
         inscritos: event.available_seats,
         asientos: event.capacity,
-        porcentaje: ((event.availableSeats * 100) / event.capacity).toFixed(2),
+        porcentaje: (
+          (parseFloat(event.availableSeats) * 100) /
+          parseFloat(event.capacity)
+        ).toFixed(2),
       }));
 
       data.push({
