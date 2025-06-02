@@ -657,6 +657,94 @@ app.post("/event-edit", async (req, res) => {
     client.release();
   }
 });
+app.get("/subsperevent", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const tracksResult = await client.query(
+      "SELECT id, name FROM event_tracks"
+    );
+    const data = [];
+
+    for (const track of tracksResult.rows) {
+      const eventsResult = await client.query(
+        `SELECT id, name, capacity, available_seats 
+         FROM events WHERE event_track_id = $1`,
+        [track.id]
+      );
+
+      const events = eventsResult.rows.map((event) => ({
+        id: event.id,
+        name: event.name,
+        inscritos: event.capacity - event.available_seats,
+      }));
+
+      data.push({
+        id: track.id,
+        name: track.name,
+        events,
+      });
+    }
+
+    res.status(200).json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+app.get("/avgstars", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const tracksResult = await client.query(
+      "SELECT id, name FROM event_tracks"
+    );
+    const data = [];
+
+    for (const track of tracksResult.rows) {
+      const eventsResult = await client.query(
+        `SELECT id, name FROM events WHERE event_track_id = $1`,
+        [track.id]
+      );
+
+      const eventsWithStars = [];
+
+      for (const event of eventsResult.rows) {
+        const feedbacksResult = await client.query(
+          `SELECT stars FROM feedbacks WHERE event_id = $1`,
+          [event.id]
+        );
+
+        const starsArray = feedbacksResult.rows.map((f) => f.stars);
+        const avg =
+          starsArray.length > 0
+            ? parseFloat(
+                (
+                  starsArray.reduce((sum, s) => sum + s, 0) / starsArray.length
+                ).toFixed(2)
+              )
+            : null;
+
+        eventsWithStars.push({
+          id: event.id,
+          name: event.name,
+          avg_stars: avg,
+        });
+      }
+
+      data.push({
+        id: track.id,
+        name: track.name,
+        events: eventsWithStars,
+      });
+    }
+
+    res.status(200).json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
