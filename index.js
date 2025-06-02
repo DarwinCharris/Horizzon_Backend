@@ -750,6 +750,23 @@ app.get("/avgstars", async (req, res) => {
     client.release();
   }
 });
+app.get("/feedbacks/event/:id", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const eventId = req.params.id;
+
+    const result = await client.query(
+      "SELECT * FROM feedbacks WHERE event_id = $1",
+      [eventId]
+    );
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
