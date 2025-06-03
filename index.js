@@ -767,6 +767,17 @@ app.get("/feedbacks/event/:id", async (req, res) => {
     client.release();
   }
 });
+app.get("/list-event-track", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const result = await client.query("SELECT id, name FROM event_tracks");
+    res.status(200).json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
